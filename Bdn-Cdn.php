@@ -28,6 +28,8 @@ class Bdn_Cdn {
 		$domains = false,
 		//Whether to rewrite the /files/ directory on older MS installs to /wp-content/blogs.dir/{i}...
 		$rewrite_files_dir = true,
+		//Whether to attempt to rewrite URLs in JSON output. Might break things.
+		$rewrite_json = true,
 		//Warning, this could break JSON and XML responses
 		$debug = false,
 		//These are private. Don't try to set them
@@ -35,7 +37,9 @@ class Bdn_Cdn {
 		$_preg_include_exclude = array(),
 		$_preg_domains = array(),
 		$_files_dir = false,
-		$_blogs_dir = false;
+		$_blogs_dir = false,
+		$_regex = false,
+		$_json_regex = false;
 
 
 	function Bdn_Cdn() {
@@ -144,6 +148,14 @@ class Bdn_Cdn {
 	}
 	
 	/**
+	 * Escapes / so they match a JSON string
+	 *
+	 */
+	function json_escape( $string ) {
+		return str_replace( '/', '\\\\\\/', $string );
+	}
+	
+	/**
 	 * Callback for output buffering.  Search content for urls to replace
 	 *
 	 * @param string $content
@@ -152,17 +164,27 @@ class Bdn_Cdn {
 	function filter_urls( $content ) {
 	
 		//If we want to fix ms-files.php, do that first
-		if( $this->rewrite_files_dir )
+		if( $this->rewrite_files_dir ) {
 			$content = str_replace( $this->_files_url, $this->_blogs_dir_url, $content );
+			if( $this->rewrite_json ) 
+				$content = str_replace( $this->json_escape( $this->_files_url ), $this->json_escape( $this->_blogs_dir_url ), $content );
+		}
 		
-		$this->_regex = '#(' . implode( '|', $this->_preg_domains ) . ')(' . ( ( !empty( $this->_preg_include_exclude ) ) ? '(' . implode( '|', array_filter( $this->_preg_include_exclude ) ) . ')' : '' ) . '(\S+?)(\.(' . implode( '|', array_filter( $this->file_extensions ) ) . ')))#i';
+		//This is the rewrite for normal assets
+		$this->_regex = '#(' . implode( '|', $this->_preg_domains ) . ')(' . ( ( !empty( $this->_preg_include_exclude ) ) ? '(' . implode( '|', array_filter( $this->_preg_include_exclude ) ) . ')' : '' ) . '([^\r\n\t\f"\'> ]+?)(\.(' . implode( '|', array_filter( $this->file_extensions ) ) . ')))#i';
 		$content = preg_replace_callback( $this->_regex, array( &$this, 'url_rewrite' ), $content );
+		
+		//If the asset is in a JSON object, you need to escape the /
+		if( $this->rewrite_json ) {
+			$this->_json_regex = '#(' . $this->json_escape( implode( '|', $this->_preg_domains ) ) . ')(' . ( ( !empty( $this->_preg_include_exclude ) ) ? '(' . $this->json_escape( implode( '|', array_filter( $this->_preg_include_exclude ) ) ) . ')' : '' ) . '([^\r\n\t\f"\'> ]+?)(\.(' . implode( '|', array_filter( $this->file_extensions ) ) . ')))#i';
+			$content = preg_replace_callback( $this->_json_regex, array( &$this, 'url_rewrite_json' ), $content );
+		}
 
 		return $content;
 	}
 	
 	/**
-	 * Callback for url preg_replace_callback.  Returns corrected URL
+	 * Callback for url preg_replace_callback.  Returns CDN url.
 	 *
 	 * @param array $match
 	 * @return string
@@ -171,6 +193,27 @@ class Bdn_Cdn {
 		global $blog_id;
 		
 		$replace_with = $this->_cdn_root . $match[ 2 ];
+		
+		if( $this->debug ) {
+			$this->_matches[] = $match;
+			$this->_replacements[] = array( 'original' => reset( $match ), 'replaced' => $replace_with );
+		}
+		
+		return $replace_with;
+		
+	}
+	
+	
+	/**
+	 * Callback for url preg_replace_callback.  Returns a JSON escaped CDN url.
+	 *
+	 * @param array $match
+	 * @return string
+	 */
+	function url_rewrite_json( $match ) {
+		global $blog_id;
+		
+		$replace_with = $this->json_escape( $this->_cdn_root ) . $match[ 2 ];
 		
 		if( $this->debug ) {
 			$this->_matches[] = $match;
