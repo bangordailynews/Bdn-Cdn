@@ -151,8 +151,9 @@ class Bdn_Cdn {
 	 * Escapes / so they match a JSON string
 	 *
 	 */
-	function json_escape( $string ) {
-		return str_replace( '/', '\\\\\\/', $string );
+	function json_escape( $string, $for_regex = true ) {
+		//replace / without a preceding \ with a \/. If we're preparing this for regex, we need an extra \\/.
+		return preg_replace( '|((?<!\\\)/)|', ( $for_regex ? '\\' : '' ) . '\\\\/', $string );
 	}
 	
 	/**
@@ -196,7 +197,7 @@ class Bdn_Cdn {
 		
 		if( $this->debug ) {
 			$this->_matches[] = $match;
-			$this->_replacements[] = array( 'original' => reset( $match ), 'replaced' => $replace_with );
+			$this->_replacements[] = array( 'callback' => 'default', 'original' => reset( $match ), 'replaced' => $replace_with );
 		}
 		
 		return $replace_with;
@@ -213,11 +214,11 @@ class Bdn_Cdn {
 	function url_rewrite_json( $match ) {
 		global $blog_id;
 		
-		$replace_with = $this->json_escape( $this->_cdn_root ) . $match[ 2 ];
+		$replace_with = $this->json_escape( $this->_cdn_root, false ) . $match[ 2 ];
 		
 		if( $this->debug ) {
 			$this->_matches[] = $match;
-			$this->_replacements[] = array( 'original' => reset( $match ), 'replaced' => $replace_with );
+			$this->_replacements[] = array( 'callback' => 'json', 'original' => reset( $match ), 'replaced' => $replace_with );
 		}
 		
 		return $replace_with;
