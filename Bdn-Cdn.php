@@ -14,10 +14,16 @@ class Bdn_Cdn {
 	private
 		//http root to rewrite files to.
 		$cdn_root_http = false,
+		//http root to rewrite image files to.
+		$cdn_image_root_http = false,
 		//https root to rewrite files to. To disable rewrite on https, keep as false
 		$cdn_root_https = false,
+		//http root to rewrite image files to.
+		$cdn_image_root_https = false,
 		//The file extensions to match
-		$file_extensions = array( 'bmp','bz2','gif','ico','gz','jpg','jpeg','mp3','pdf','png','rar','rtf','swf','tar','tgz','txt','wav','zip', 'css', 'js' ),
+		$file_extensions = array( 'bmp','bz2','gif','ico','gz','mp3','pdf','rar','rtf','swf','tar','tgz','txt','wav','zip', 'css', 'js' ),
+		//The image file types which are supported by photon.
+		$image_file_extensions = array( 'jpg','jpeg','png' ),
 		//Include files in these directories
 		//You can also include top-level files like I did here with favicon
 		//If you want to reference a specific file, do not include the extension
@@ -34,32 +40,42 @@ class Bdn_Cdn {
 		$debug = false,
 		//These are private. Don't try to set them
 		$_cdn_root = false,
+		$_cdn_image_root = false,
 		$_preg_include_exclude = array(),
 		$_preg_domains = array(),
 		$_files_dir = false,
 		$_blogs_dir = false,
-		$_regex = false,
-		$_json_regex = false;
+		$_regex = array();
 
 
-	function Bdn_Cdn() {
-		
-		global $bdn_cdn;
-		
-		if( empty( $bdn_cdn ) )
-			return;
+	public function __construct( $bdn_cdn ) {
+	
+		//Add the new domain to do the CDN when we do switch_to_blog
+		add_action( 'switch_blog', array( $this, 'switch_to_blog' ) );
 		
 		//Default cdn root is the http root
-		$this->_cdn_root = $this->cdn_root_http = trailingslashit( $bdn_cdn[ 'cdn_root_http' ] );
+		$this->_cdn_root = $this->_cdn_image_root = $this->cdn_image_root_http = $this->cdn_root_http = trailingslashit( $bdn_cdn[ 'cdn_root_http' ] );
 		
-		//Set the preferences in $bdn_cdn
+		//Set the preferences in $bdn_cdn 
 		foreach( $bdn_cdn as $key => $value ) {
-			if( isset( $this->$key ) && $key != 'cdn_root_http' && substr( $key, 0, 1 ) != '_' )
-				$this->$key = $value;
+
+			if( !( isset( $this->$key ) && $key != 'cdn_root_http' && substr( $key, 0, 1 ) != '_' ) )
+				continue;
+
+			$this->$key = $value;
+
 		}
 		
 		if( $this->cdn_root_https )
 			$this->cdn_root_https = trailingslashit( $this->cdn_root_https );
+			
+		if( $this->cdn_image_root_http ) {
+			$this->cdn_image_root_http = trailingslashit( $this->cdn_image_root_http );
+			$this->_cdn_image_root = $this->cdn_image_root_http;
+		}
+		
+		if( $this->cdn_image_root_https )
+			$this->cdn_image_root_https = trailingslashit( $this->cdn_image_root_https );
 		
 		//Create a preg-safe array of the included directories and files
 		if( !empty( $this->include ) && is_array( $this->include ) ) {
@@ -68,12 +84,14 @@ class Bdn_Cdn {
 		}
 		
 		//If the page is SSL and we don't have an HTTPS URL, don't replace URLs
-		if( is_ssl() && !$this->cdn_root_https )
+		if( is_ssl() && !$this->cdn_root_https && !$this->cdn_image_root_https )
 			return;
 		
 		//If the page is SSL, change the CDN root to the https root
-		if( is_ssl() )
+		if( is_ssl() ) {
 			$this->_cdn_root = $this->cdn_root_https;
+			$this->_cdn_image_root = $this->cdn_image_root_https;
+		}
 		
 		$this->domains();
 		$this->rewrite_files_dir();
@@ -90,25 +108,47 @@ class Bdn_Cdn {
 				echo '-->';
 			});
 		}
+	}	
+	
+	/**
+	 * After we switch_to_blog(), add the new domain to our list of domains
+	 * to replace
+	 *
+	 */
+	public function switch_to_blog() {
+
+		$this->add_domain( site_url() );
+		$this->rewrite_files_dir();
+
+	}	
+	
+	/**
+	 * Wrapper function to handle adding a domain to the list of domains to replace
+	 *
+	 */
+	public function add_domain( $domain ) {
+	
+		//For the matching of the links, whether they are ssl or not
+		$this->_preg_domains[] = str_replace( array( 'http\:', 'https\:' ), 'https?\:', preg_quote( trailingslashit( $domain ) ) );
+		$this->_preg_domains = array_unique( array_filter( $this->_preg_domains ) );
+	
 	}
 	
 	/**
 	 * The domains to look for to rewrite
 	 *
 	 */
-	function domains() {
+	public function domains() {
 	
 		if( !empty( $this->domains ) && is_array( $this->domains ) ) {
 			foreach( $this->domains as $domain )
-				$this->_preg_domains[] = preg_quote( trailingslashit( $domain ) );
+				$this->add_domain( $domain );
 		}
 		
-		$this->_preg_domains[] = preg_quote( trailingslashit( site_url() ) );
+		$this->add_domain( site_url() );
 		
 		if( is_multisite() )
-			$this->_preg_domains[] = preg_quote( trailingslashit( network_site_url() ) );
-			
-		$this->_preg_domains = array_filter( $this->_preg_domains );
+			$this->add_domain( network_site_url() );
 	
 	}
 	
@@ -119,7 +159,7 @@ class Bdn_Cdn {
 	 * and then mycdn.com/wp-content/...
 	 *
 	 */
-	function rewrite_files_dir() {
+	public function rewrite_files_dir() {
 		
 		if( !is_multisite() )
 			$this->rewrite_files_dir = false;
@@ -131,9 +171,9 @@ class Bdn_Cdn {
 			return;
 		
 		$upload_dirs = wp_upload_dir();
-		
-		$this->_files_url = $upload_dirs[ 'baseurl' ];
-		$this->_blogs_dir_url = str_replace( ABSPATH, trailingslashit( site_url() ), $upload_dirs[ 'basedir' ] );
+
+		//Replace the original baseurl with our new baseurl, which uses the basedir path (e.g. /wp-content/blogs.dir/{id}/files/)
+		$this->_blogs_dir_urls[ $upload_dirs[ 'baseurl' ] ] = str_replace( ABSPATH, trailingslashit( site_url() ), $upload_dirs[ 'basedir' ] );
 		
 	}
 	
@@ -141,7 +181,7 @@ class Bdn_Cdn {
 	 * Start output buffering.
 	 *
 	 */
-	function start_buffer() {
+	public function start_buffer() {
 		
 		ob_start( array( &$this, 'filter_urls' ) );
 
@@ -151,10 +191,46 @@ class Bdn_Cdn {
 	 * Escapes / so they match a JSON string
 	 *
 	 */
-	function json_escape( $string, $for_regex = true ) {
+	public function json_escape( $string, $for_regex = true ) {
 		//replace / without a preceding \ with a \/. If we're preparing this for regex, we need an extra \\/.
 		return preg_replace( '|((?<!\\\)/)|', ( $for_regex ? '\\' : '' ) . '\\\\/', $string );
 	}
+
+
+	/**
+	 * @TODO: Document!
+	 *
+	 */
+	public function build_extension_regex( $extensions = array(), $for_json = false ) {
+		
+		$preg_domains = implode( '|', $this->_preg_domains );
+		$include_exclude = implode( '|', array_filter( $this->_preg_include_exclude ) );
+		
+		if( !empty( $for_json ) ) {
+			$preg_domains = $this->json_escape( $preg_domains );
+			$include_exclude = $this->json_escape( $include_exclude );
+		}
+	
+		$regex = '#';
+			$regex .= '(?P<context>src)?';
+			$regex .= '(?P<opening>\=\"|\=\\\')?';
+			$regex .= '(?P<link>';
+				$regex .= '(?P<domain>' . $preg_domains . ')';
+				$regex .= '(?P<path>' ;
+					$regex .= ( ( !empty( $include_exclude ) ) ? '(' . $include_exclude . ')' : '' );
+					$regex .= '([^\r\n\t\f"\'> ]+?)';
+					$regex .= '(\.(?P<ext>' . implode( '|', array_filter( $extensions ) ) . '))';
+				$regex .= ')';
+			$regex .= ')';
+			$regex .= '(?P<termination>\\\'|\")?';
+		$regex .= '#i';
+		
+		$this->_regex[] = $regex;
+		
+		return $regex;
+
+	}
+
 	
 	/**
 	 * Callback for output buffering.  Search content for urls to replace
@@ -162,27 +238,69 @@ class Bdn_Cdn {
 	 * @param string $content
 	 * @return string
 	 */
-	function filter_urls( $content ) {
+	public function filter_urls( $content ) {
 	
 		//If we want to fix ms-files.php, do that first
 		if( $this->rewrite_files_dir ) {
-			$content = str_replace( $this->_files_url, $this->_blogs_dir_url, $content );
-			if( $this->rewrite_json ) 
-				$content = str_replace( $this->json_escape( $this->_files_url ), $this->json_escape( $this->_blogs_dir_url ), $content );
+			foreach( $this->_blogs_dir_urls as $original => $replace ) {
+		
+				$content = str_replace( $original, $replace, $content );
+				if( $this->rewrite_json ) 
+					$content = str_replace( $this->json_escape( $original ), $this->json_escape( $replace ), $content );
+
+			}
 		}
 		
+		//This is the rewrite for photon-supported image assets.
+		$content = preg_replace_callback( $this->build_extension_regex( $this->image_file_extensions ),
+										  array( &$this, 'image_url_rewrite' ),
+	   									  $content );
+
 		//This is the rewrite for normal assets
-		$this->_regex = '#(' . implode( '|', $this->_preg_domains ) . ')(' . ( ( !empty( $this->_preg_include_exclude ) ) ? '(' . implode( '|', array_filter( $this->_preg_include_exclude ) ) . ')' : '' ) . '([^\r\n\t\f"\'> ]+?)(\.(' . implode( '|', array_filter( $this->file_extensions ) ) . ')))#i';
-		$content = preg_replace_callback( $this->_regex, array( &$this, 'url_rewrite' ), $content );
-		
+		$content = preg_replace_callback( $this->build_extension_regex( $this->file_extensions ), 
+										  array( &$this, 'url_rewrite' ),
+	   									  $content );
+
+
 		//If the asset is in a JSON object, you need to escape the /
 		if( $this->rewrite_json ) {
-			$this->_json_regex = '#(' . $this->json_escape( implode( '|', $this->_preg_domains ) ) . ')(' . ( ( !empty( $this->_preg_include_exclude ) ) ? '(' . $this->json_escape( implode( '|', array_filter( $this->_preg_include_exclude ) ) ) . ')' : '' ) . '([^\r\n\t\f"\'> ]+?)(\.(' . implode( '|', array_filter( $this->file_extensions ) ) . ')))#i';
-			$content = preg_replace_callback( $this->_json_regex, array( &$this, 'url_rewrite_json' ), $content );
+			$content = preg_replace_callback( $this->build_extension_regex( $this->image_file_extensions, true ), array( &$this, 'image_url_rewrite_json' ), $content );
+			$content = preg_replace_callback( $this->build_extension_regex( $this->file_extensions, true ), array( &$this, 'url_rewrite_json' ), $content );
 		}
 
 		return $content;
 	}
+
+	
+	/**
+	 * Callback for url preg_replace_callback.  Returns CDN image url.
+	 *
+	 * @param array $match
+	 * @return string
+	 */
+	public function image_url_rewrite( $match ) {
+		global $blog_id;
+		
+		// Serve low-quality images by default, upgrade them later.
+		// FASTER LOAD TIMES.
+		
+		if( empty( $this->_cdn_image_root ) )
+			return $match[ 0 ];
+		
+		$replace_with = $this->_cdn_image_root . $match[ 'path' ];
+		
+		
+		if( $this->debug ) {
+			$this->_matches[] = $match;
+			$this->_replacements[] = array( 'callback' => 'image',
+											'original' => reset( $match ), 
+											str_replace( $match[ 'link' ], $replace_with, $match[ 0 ] ) );
+		}
+		
+		return str_replace( $match[ 'link' ], $replace_with, $match[ 0 ] );
+		
+	}
+	
 	
 	/**
 	 * Callback for url preg_replace_callback.  Returns CDN url.
@@ -190,17 +308,22 @@ class Bdn_Cdn {
 	 * @param array $match
 	 * @return string
 	 */
-	function url_rewrite( $match ) {
+	public function url_rewrite( $match ) {
 		global $blog_id;
 		
-		$replace_with = $this->_cdn_root . $match[ 2 ];
+		if( empty( $this->_cdn_root ) )
+			return $match[ 0 ];
+		
+		$replace_with = $this->_cdn_root . $match[ 'path' ];
 		
 		if( $this->debug ) {
 			$this->_matches[] = $match;
-			$this->_replacements[] = array( 'callback' => 'default', 'original' => reset( $match ), 'replaced' => $replace_with );
+			$this->_replacements[] = array( 'callback' => 'default',
+											'original' => reset( $match ),
+		   									'replaced' => str_replace( $match[ 'link' ], $replace_with, $match[ 0 ] ) );
 		}
 		
-		return $replace_with;
+		return str_replace( $match[ 'link' ], $replace_with, $match[ 0 ] );
 		
 	}
 	
@@ -211,20 +334,34 @@ class Bdn_Cdn {
 	 * @param array $match
 	 * @return string
 	 */
-	function url_rewrite_json( $match ) {
+	public function url_rewrite_json( $match, $root = false ) {
 		global $blog_id;
 		
-		$replace_with = $this->json_escape( $this->_cdn_root, false ) . $match[ 2 ];
+		$root = empty( $root ) ? $this->_cdn_root : $root;
+		
+		if( empty( $root ) )
+			return $match[ 0 ];
+		
+		$replace_with = $this->json_escape( $root, false ) . $match[ 'path' ];
 		
 		if( $this->debug ) {
 			$this->_matches[] = $match;
-			$this->_replacements[] = array( 'callback' => 'json', 'original' => reset( $match ), 'replaced' => $replace_with );
+			$this->_replacements[] = array( 'callback' => 'json',
+											'original' => reset( $match ),
+											'replaced' => str_replace( $match[ 'link' ], $replace_with, $match[ 0 ] ) );
 		}
 		
-		return $replace_with;
+		return str_replace( $match[ 'link' ], $replace_with, $match[ 0 ] );
+		
+	}
+	
+	public function image_url_rewrite_json( $match ) {
+
+		return $this->url_rewrite_json( $match, $this->_cdn_image_root );
 		
 	}
 
 }
 
-new Bdn_Cdn;
+if( isset( $bdn_cdn ) )
+	$bdn_cdn = new Bdn_Cdn( $bdn_cdn );
